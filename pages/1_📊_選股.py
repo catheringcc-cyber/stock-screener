@@ -1,0 +1,162 @@
+"""每日選股 — 4 bucket分類，按actionability排序。"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pandas as pd
+import streamlit as st
+
+from lib.data import download_prices
+from lib.strategy import scan_universe
+from lib.universe import get_universe
+
+st.set_page_config(page_title="Screener", page_icon="📊", layout="wide")
+st.title("📊 Screener 選股")
+
+# ---------- 側邊欄 ----------
+with st.sidebar:
+    st.header("掃描設定")
+    universe_choice = st.selectbox(
+        "股池",
+        ["sp500_ndx", "sp500", "fallback"],
+        format_func={
+            "sp500_ndx": "S&P 500 + Nasdaq 100（~517隻）",
+            "sp500": "S&P 500（500隻）",
+            "fallback": "精選動量股（~99隻）",
+        }.get,
+        index=0,
+    )
+
+    custom_list = st.text_area(
+        "自訂股票（每行一隻，會覆蓋股池）",
+        height=100,
+        placeholder="AAPL\nNVDA\nARM",
+    )
+
+    min_conf = st.slider("最低信心度", 0, 100, 50, 5)
+    max_results = st.slider("每個bucket最多顯示", 5, 40, 20, 5)
+
+    rescan = st.button("🔄 強制重掃", help="清cache、重新由Yahoo拎數據")
+
+
+# ---------- 掃描 ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_scan(universe_key: str, custom: tuple[str, ...]):
+    if custom:
+        tickers = list(custom) + ["SPY"]
+    else:
+        tickers = get_universe(universe_key)
+    data = download_prices(tickers)
+    signals = scan_universe(data)
+    return signals, len(data)
+
+
+if rescan:
+    st.cache_data.clear()
+    cache_dir = Path(__file__).parent.parent / ".cache" / "prices"
+    today = pd.Timestamp.utcnow().date().isoformat()
+    for f in cache_dir.glob(f"*_{today}.parquet"):
+        f.unlink()
+
+custom_tuple = tuple(
+    t.strip().upper() for t in (custom_list or "").splitlines() if t.strip()
+)
+
+with st.spinner("掃描中…（首次掃整個股池要1-2分鐘，之後讀cache好快）"):
+    signals, n_loaded = run_scan(universe_choice, custom_tuple)
+
+st.caption(f"已載入 {n_loaded} 隻 · 揾到 {len(signals)} 個signals")
+
+# ---------- 篩選同顯示 ----------
+filtered = [s for s in signals if s.confidence >= min_conf]
+
+tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
+    [
+        f"🎯 入場訊號 ({sum(1 for s in filtered if s.bucket == 'entry')})",
+        f"⏳ 回調中 ({sum(1 for s in filtered if s.bucket == 'pullback')})",
+        f"💪 強勢觀察 ({sum(1 for s in filtered if s.bucket == 'strong')})",
+        f"🌱 轉強候選 ({sum(1 for s in filtered if s.bucket == 'emerging')})",
+    ]
+)
+
+
+def render_bucket(tab, bucket_name: str, blurb: str):
+    rows = [s.as_row() for s in filtered if s.bucket == bucket_name][:max_results]
+    with tab:
+        st.markdown(blurb)
+        if not rows:
+            st.info("依家無股符合呢個信心度。")
+            return
+        df = pd.DataFrame(rows)
+        df = df.rename(columns={
+            "Ticker": "股票",
+            "Bucket": "Bucket",
+            "Confidence": "信心度",
+            "Price": "現價",
+            "Entry": "入場價",
+            "Stop": "止蝕",
+            "T1": "目標1",
+            "T2": "目標2",
+            "R:R (T1)": "回報/風險",
+            "Stop %": "止蝕%",
+            "EMA20 slope %": "EMA20斜率%",
+            "HV pct": "波幅百分位",
+            "Notes": "備註",
+        })
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "信心度": st.column_config.ProgressColumn(
+                    "信心度", min_value=0, max_value=100, format="%.1f"
+                ),
+                "EMA20斜率%": st.column_config.NumberColumn(
+                    "EMA20斜率%",
+                    help="EMA20過去10日%變化。3-7%係45°甜蜜區，>15%太parabolic。",
+                    format="%.2f%%",
+                ),
+                "波幅百分位": st.column_config.NumberColumn(
+                    "波幅百分位",
+                    help="HV percentile，越低越平靜（option可能平），越高越貴。將來會升級做IV rank。",
+                    format="%.0f",
+                ),
+                "現價": st.column_config.NumberColumn(format="$%.2f"),
+                "入場價": st.column_config.NumberColumn(format="$%.2f"),
+                "止蝕": st.column_config.NumberColumn(format="$%.2f"),
+                "目標1": st.column_config.NumberColumn(format="$%.2f"),
+                "目標2": st.column_config.NumberColumn(format="$%.2f"),
+                "止蝕%": st.column_config.NumberColumn(format="%.2f%%"),
+                "回報/風險": st.column_config.NumberColumn(format="%.2fx"),
+            },
+        )
+        st.caption(
+            "目標1 = 入場 + 2×風險 · 目標2 = 量度升幅目標 · 止蝕喺[-7%, -3%]之間"
+        )
+
+
+render_bucket(
+    tab_entry,
+    "entry",
+    "**今日可入場。** 3階段全部確認 — 趨勢強、有回調、確認陽燭出。市價入，即刻set定止蝕。",
+)
+render_bucket(
+    tab_pullback,
+    "pullback",
+    "**密切觀察。** 強勢股回到EMA20附近、成交縮量。喺入場價set price alert — "
+    "等陽燭企返EMA20同有量先入。**特別留意「斜率高+距離近」嘅黃金位**。",
+)
+render_bucket(
+    tab_strong,
+    "strong",
+    "**加入watchlist。** EMA20斜率正常、跑贏大市，但未回調。等 — 追高係穩死。"
+    " 部分斜率>15%已經接近parabolic，要更加耐性等。",
+)
+render_bucket(
+    tab_emerging,
+    "emerging",
+    "**🌱 早期候選。** EMA20剛由走平翹上、EMA5啱啱金叉EMA20、成交有量。"
+    "呢類股可能2-4星期後變強勢。**風險高啲，但upside最大** — "
+    "可以小注試水，或者set price alert等突破。",
+)
