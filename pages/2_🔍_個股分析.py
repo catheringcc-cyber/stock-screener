@@ -29,12 +29,20 @@ with col_period:
 
 with st.sidebar:
     st.header("VCP 設定")
-    vcp_threshold = st.slider(
-        "Zigzag threshold (%)",
-        min_value=2.0, max_value=15.0, value=5.0, step=0.5,
-        help="呢個係VCP detection嘅敏感度。$1000股票 vs $20股票嘅normal volatility完全唔同。"
-             "預設5%適合大部分$50-500嘅股票。低波幅股票試 3%，高波幅spec試 7-8%。",
+    use_atr_threshold = st.checkbox(
+        "🤖 用 ATR 自動調整 threshold（推薦）",
+        value=True,
+        help="ATR-based threshold = 2 × ATR(20) / 股價。"
+             "自動適應每隻股嘅natural volatility — $1700股票同$20股票嘅sensitivity會自動唔同。"
+             "關掉就用下面個manual slider。",
     )
+    vcp_threshold_manual = st.slider(
+        "Zigzag threshold (%) — manual override",
+        min_value=2.0, max_value=15.0, value=5.0, step=0.5,
+        disabled=use_atr_threshold,
+        help="只喺關咗ATR auto嗰陣先用。低波幅股票試 3%，高波幅spec試 7-8%。",
+    )
+    vcp_threshold = "auto" if use_atr_threshold else vcp_threshold_manual
     vcp_lookback = st.slider(
         "VCP 分析窗口（交易日）",
         min_value=60, max_value=180, value=120, step=10,
@@ -209,12 +217,17 @@ else:
 # ---------- VCP 分析 ----------
 st.markdown("---")
 st.subheader("🎯 VCP (Volatility Contraction Pattern) 分析")
+vcp_result = analyze_vcp(df_raw, threshold_pct=vcp_threshold, lookback_bars=vcp_lookback)
+threshold_label = (
+    f"🤖 ATR-auto **{vcp_result.threshold_used:.2f}%**"
+    if vcp_threshold == "auto"
+    else f"Manual **{vcp_result.threshold_used:.2f}%**"
+)
 st.caption(
     "Minervini簽名setup — 一連串越嚟越細嘅回調 + 成交量遞減，最後收窄到一個pivot point。"
-    f"Threshold = **{vcp_threshold}%**（用左邊sidebar調），分析窗口 = **{vcp_lookback}**個交易日。"
+    f"Zigzag threshold = {threshold_label}，分析窗口 = **{vcp_lookback}**個交易日。"
+    "Contraction規則：每次≤上一次×0.8（即係細20%先合格）。"
 )
-
-vcp_result = analyze_vcp(df_raw, threshold_pct=vcp_threshold, lookback_bars=vcp_lookback)
 
 # Maturity headline
 mat = vcp_result.maturity

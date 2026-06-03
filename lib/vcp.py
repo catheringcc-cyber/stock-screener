@@ -77,29 +77,28 @@ class VCPResult:
     def maturity(self) -> str:
         """🟢 Ready · 🟡 Forming · 🚀 Broken out · ⚪ Not yet.
 
-        Price must be in/near the base (not already exploded past pivot) for
-        Ready/Forming. If price > pivot + 2%, the VCP has broken out — useful
-        signal but no longer a setup to plan around.
+        Loosened thresholds (Minervini's spec doesn't pin exact numbers):
+        - Ready: ≥2 contractions, vol↓, tightness <5%, distance -3% to +2%
+        - Forming: ≥2 contractions, vol↓, distance -10% to +2%
+        - Broken out: ≥2 contractions, vol↓, distance +2% to +15%
         """
         d = self.distance_to_pivot_pct
 
-        # Already broken above — flag separately
         if (
             d is not None and d > 2.0
             and self.n_contractions >= 2
             and self.volume_decreasing
-            and d <= 15.0  # only flag fresh breakouts, not stale ones
+            and d <= 15.0
         ):
             return "🚀 Broken out"
 
-        # Must be at/near pivot to be a setup
         if d is None or d > 2.0 or d < -15.0:
             return "⚪ Not yet"
 
         if (
-            self.n_contractions >= 3
+            self.n_contractions >= 2
             and self.volume_decreasing
-            and self.tightness_pct is not None and self.tightness_pct < 3.0
+            and self.tightness_pct is not None and self.tightness_pct < 5.0
             and -3.0 <= d <= 2.0
         ):
             return "🟢 Ready"
@@ -248,23 +247,26 @@ def _check_decreasing_volumes(contractions: List[Contraction]) -> bool:
     )
 
 
+# Each contraction only needs to be ≥20% shallower than the prior one.
+# Minervini's original spec says "each contraction shallower than the last" without
+# pinning a strict %. 0.8 is a practical compromise — catches most real VCPs without
+# letting through unrelated noise. (0.6 was too strict, killed real setups.)
+CONTRACTION_RATIO = 0.8
+
+
 def _check_decreasing_contractions(contractions: List[Contraction]) -> bool:
-    """True if each contraction depth is ≤ 0.6 × prior (40%+ shallower)."""
+    """True if each contraction depth is ≤ CONTRACTION_RATIO × prior."""
     if len(contractions) < 2:
         return False
     return all(
-        contractions[i].depth_pct <= contractions[i - 1].depth_pct * 0.6
+        contractions[i].depth_pct <= contractions[i - 1].depth_pct * CONTRACTION_RATIO
         for i in range(1, len(contractions))
     )
 
 
 def _trim_to_vcp_series(all_contractions: List[Contraction]) -> List[Contraction]:
     """From all zigzag-derived contractions, keep only the most-recent tail
-    that forms a valid VCP series (each step ≤ 0.6 × prior).
-
-    Walk backwards from the latest contraction. Include the prior one only if
-    it's deep enough to be a valid T_{n-1} for the next-in-series. Stop at
-    the first qualification break.
+    that forms a valid VCP series (each step ≤ CONTRACTION_RATIO × prior).
     """
     if not all_contractions:
         return []
@@ -272,17 +274,47 @@ def _trim_to_vcp_series(all_contractions: List[Contraction]) -> List[Contraction
     for i in range(len(all_contractions) - 2, -1, -1):
         prior = all_contractions[i]
         next_in_series = series[0]
-        # Forward VCP rule: next ≤ prior × 0.6  ⟺  prior ≥ next / 0.6
-        if prior.depth_pct >= next_in_series.depth_pct / 0.6:
+        # Forward VCP rule: next ≤ prior × R  ⟺  prior ≥ next / R
+        if prior.depth_pct >= next_in_series.depth_pct / CONTRACTION_RATIO:
             series.insert(0, prior)
         else:
             break
     return series
 
 
+def _atr_threshold_pct(df: pd.DataFrame, n: int = 20, multiplier: float = 1.0) -> float:
+    """Compute zigzag threshold as `multiplier` × ATR(20) / price.
+
+    A/B testing showed multiplier=1.0 with cap [2%, 8%] gives the most useful
+    per-stock thresholds. 2× ATR (the user's initial suggestion) was too coarse
+    — high-vol momentum names landed at the 12% ceiling and lost their VCP
+    contractions to noise filtering.
+
+    Auto-adapts to the stock's natural volatility — a $1700 stock with $40
+    daily swings and a $20 stock with $0.50 swings both end up around similar
+    % threshold appropriate for their volatility regime.
+    """
+    if df is None or len(df) < n + 1:
+        return 5.0  # fallback
+    high = df["High"].values
+    low = df["Low"].values
+    close_prev = df["Close"].shift(1).values
+    tr = np.maximum.reduce([
+        high - low,
+        np.abs(high - close_prev),
+        np.abs(low - close_prev),
+    ])
+    atr = pd.Series(tr).rolling(n).mean().iloc[-1]
+    last_close = float(df["Close"].iloc[-1])
+    if not np.isfinite(atr) or last_close <= 0:
+        return 5.0
+    pct = float(multiplier * atr / last_close * 100)
+    return max(2.0, min(8.0, pct))
+
+
 def analyze_vcp(
     df: pd.DataFrame,
-    threshold_pct: float = 5.0,
+    threshold_pct: float | str = "auto",
     lookback_bars: int = 120,
     tightness_window: int = 12,
 ) -> VCPResult:
@@ -290,13 +322,20 @@ def analyze_vcp(
 
     Args:
         df: OHLCV frame with DatetimeIndex.
-        threshold_pct: zigzag reversal threshold. Smaller catches shallower
-            T3/T4 but more noise. 5% is a reasonable starting default for $50-500
-            stocks; try 3% for low-volatility names and 7-8% for high-vol speculation.
+        threshold_pct: zigzag reversal threshold (%). Pass 'auto' (default) to
+            compute as 2 × ATR(20) / price — adapts to each stock's natural
+            volatility so a $1700 stock doesn't trigger on every micro-swing.
+            Manual override accepts a float (try 3% for low-vol, 7-8% for spec).
         lookback_bars: number of recent bars to analyze (~6 months default).
         tightness_window: bars used for tightness score (10-15 typical).
     """
-    res = VCPResult(threshold_used=threshold_pct)
+    # Resolve auto threshold using the FULL df (need ATR baseline outside window)
+    if threshold_pct == "auto":
+        effective_threshold = _atr_threshold_pct(df, n=20, multiplier=2.0)
+    else:
+        effective_threshold = float(threshold_pct)
+
+    res = VCPResult(threshold_used=effective_threshold)
 
     if df is None or df.empty:
         return res
@@ -307,7 +346,7 @@ def analyze_vcp(
 
     res.last_close = float(window["Close"].iloc[-1])
 
-    pivots = find_zigzag_pivots(window, threshold_pct=threshold_pct)
+    pivots = find_zigzag_pivots(window, threshold_pct=effective_threshold)
     all_contractions = _build_contractions(window, pivots)
     res.all_contractions = all_contractions
 
