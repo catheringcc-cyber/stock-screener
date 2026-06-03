@@ -14,9 +14,9 @@ st.set_page_config(
 st.title("📈 動量 + 回調選股")
 
 st.success(
-    "🆕 **最新加入：Minervini Trend Template 8條件 gate keeper**　·　"
-    "🎯 期權異動掃描（PCR + 大額$流入 + 聰明錢方向）　·　"
-    "🌱 emerging bucket（早期轉強候選）"
+    "🆕 **最新加入**：🎯 **VCP (Volatility Contraction Pattern) 檢測 + ATR auto-threshold**　·　"
+    "🏆 Minervini Trend Template 8條件 gate keeper　·　"
+    "🎯 期權異動掃描（PCR + 大額$流入 + 聰明錢方向）"
 )
 
 st.markdown(
@@ -25,14 +25,14 @@ st.markdown(
 
 | Page | 做咩 |
 |---|---|
-| **📊 選股** | 每日掃 S&P 500 + Nasdaq 100，分 **5 個 tab**：🏆 Minervini 8/8、🎯 入場、⏳ 回調、💪 強勢、🌱 轉強候選 |
-| **🔍 個股分析** | K線 + EMA5/20/50 + RSI + **Minervini 8條件 checklist** + 52週位置 + 入場/止蝕/目標 + **期權異動drill-down** |
+| **📊 選股** | 每日掃 S&P 500 + Nasdaq 100，分 **6 個 tab**：🎯 **VCP Setup**、🏆 Minervini 8/8、🎯 入場、⏳ 回調、💪 強勢、🌱 轉強候選 |
+| **🔍 個股分析** | K線 + EMA5/20/50 + RSI + **Minervini 8條件 checklist** + 52週位置 + **🎯 VCP 分析（contraction series + pivot line + zigzag overlay）** + 入場/止蝕/目標 + **期權異動drill-down** |
 | **📉 回測** | Walk-forward 回測單一股票嘅策略表現 |
 | **🎯 期權異動** | 掃 ~120 隻活躍options名，揾 **PCR異常 + 大額$流入 + 聰明錢方向 + Vol/OI異動** |
 
 ---
 
-### 策略邏輯（兩層 gate keeper + 4 個入場階段）
+### 策略邏輯（三層 gate keeper + 4 個入場階段）
 
 **Layer 1 — Minervini Trend Template（8條件全部要過）**
 
@@ -49,7 +49,19 @@ st.markdown(
 | 7 | 股價喺 52週高位 25% 範圍內 |
 | 8 | RS Rating ≥ 70 |
 
-**Layer 2 — 4 階段動量分類**（過完 Minervini 之後，由 EMA20 主導）
+**Layer 2 — VCP（Volatility Contraction Pattern）setup**
+
+過咗Minervini之後，睇VCP成熟度。VCP = 一連串越嚟越淺嘅回調 + 成交量遞減，最後收窄到 pivot：
+
+| Maturity | 條件 | 動作 |
+|---|---|---|
+| 🟢 **Ready** | ≥2 contractions、tightness <5%、距 pivot -3% 至 +2% | **set price alert喺 pivot 等突破** |
+| 🟡 **Forming** | ≥2 contractions + 量遞減、距 pivot -10% 至 +2% | 觀察、等再收窄 |
+| 🚀 **Broken out** | 已突破 pivot 0-15% | 追入或等回踩 |
+
+Zigzag threshold用 ATR-based 自動調整（1× ATR(20) / 股價），$1700 股票 vs $20 股票 sensitivity自動唔同。
+
+**Layer 3 — 4 階段動量分類**（過完 Minervini + VCP 之後，由 EMA20 主導）
 
 | 階段 | 條件 | 動作 |
 |---|---|---|
@@ -58,11 +70,11 @@ st.markdown(
 | ⏳ **回調** | 強勢股回到 EMA20 附近、成交縮量 | 等突破 |
 | 🎯 **入場** | 陽燭企返 EMA20、量回升、RSI 40-60 | **市價入** |
 
-**Layer 3 — 期權異動 confirmation**
+**Layer 4 — 期權異動 confirmation**
 
 技術面好 + Smart money方向一致 = 最高 conviction。例如：
-- 入場 bucket + Minervini 8/8 + Options flow 顯示「聰明錢睇升」→ **三層 confirm，重注**
-- 入場 bucket + Minervini 8/8 + Options flow 顯示「聰明錢睇跌」→ **可能有壞消息，skip**
+- 入場 bucket + Minervini 8/8 + VCP Ready + Options flow 聰明錢睇升 → **四層 confirm，A+ setup**
+- 入場 bucket + Minervini 8/8 + Options flow 聰明錢睇跌 → **可能有壞消息，skip**
 
 
 ### 離場邏輯（建埋喺 Stock Detail）
