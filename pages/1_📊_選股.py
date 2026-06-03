@@ -72,9 +72,13 @@ with st.spinner("掃描中…（首次掃整個股池要1-2分鐘，之後讀cac
     signals, n_loaded = run_scan(universe_choice, custom_tuple)
 
 n_minervini = sum(1 for s in signals if s.minervini and s.minervini.all_pass)
+n_vcp_ready = sum(1 for s in signals if s.vcp and "Ready" in s.vcp.maturity)
+n_vcp_forming = sum(1 for s in signals if s.vcp and "Forming" in s.vcp.maturity)
+n_vcp_breakout = sum(1 for s in signals if s.vcp and "Broken" in s.vcp.maturity)
 st.caption(
     f"已載入 {n_loaded} 隻 · 揾到 {len(signals)} 個signals · "
-    f"🏆 **{n_minervini}** 隻通過Minervini Trend Template 8/8"
+    f"🏆 **{n_minervini}** 隻通過Minervini Trend Template 8/8 · "
+    f"VCP 🟢 Ready **{n_vcp_ready}** · 🟡 Forming **{n_vcp_forming}** · 🚀 突破 **{n_vcp_breakout}**"
 )
 
 # ---------- 篩選同顯示 ----------
@@ -82,8 +86,9 @@ filtered = [s for s in signals if s.confidence >= min_conf]
 if minervini_only:
     filtered = [s for s in filtered if s.minervini and s.minervini.all_pass]
 
-tab_minervini, tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
+tab_vcp, tab_minervini, tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
     [
+        f"🎯 VCP Setup ({sum(1 for s in filtered if s.vcp and ('Ready' in s.vcp.maturity or 'Forming' in s.vcp.maturity or 'Broken' in s.vcp.maturity))})",
         f"🏆 Minervini 8/8 ({sum(1 for s in filtered if s.minervini and s.minervini.all_pass)})",
         f"🎯 入場訊號 ({sum(1 for s in filtered if s.bucket == 'entry')})",
         f"⏳ 回調中 ({sum(1 for s in filtered if s.bucket == 'pullback')})",
@@ -105,6 +110,10 @@ def _render_table(items_list, max_n):
         "Confidence": "信心度",
         "Minervini": "Minervini",
         "RS": "RS Rating",
+        "VCP": "VCP",
+        "VCP tight%": "VCP收窄%",
+        "距Pivot%": "距Pivot%",
+        "Pivot $": "Pivot $",
         "Price": "現價",
         "Entry": "入場價",
         "Stop": "止蝕",
@@ -132,6 +141,25 @@ def _render_table(items_list, max_n):
                 "RS Rating",
                 help="IBD式 12個月relative strength percentile rank（1-99）。≥70為Minervini第8條，理想85+。",
                 format="%.0f",
+            ),
+            "VCP": st.column_config.TextColumn(
+                "VCP",
+                help="VCP setup成熟度：🟢 Ready（≥3T+volume遞減+tight<3%+距pivot<3%）· 🟡 Forming（≥2T+volume遞減+喺base內）· 🚀 已突破 · ⚪ 無VCP",
+            ),
+            "VCP收窄%": st.column_config.NumberColumn(
+                "VCP收窄%",
+                help="最近12日平均daily range / 股價。<3% = tight base, ≥5% = 仲未coil好。",
+                format="%.2f%%",
+            ),
+            "距Pivot%": st.column_config.NumberColumn(
+                "距Pivot%",
+                help="現價距離VCP pivot(阻力)的距離。負數=喺pivot之下；0% = 啱啱touching；正數 = 已突破。",
+                format="%.2f%%",
+            ),
+            "Pivot $": st.column_config.NumberColumn(
+                "Pivot $",
+                help="VCP最後contraction嘅高位。突破呢個價位 = buy signal。",
+                format="$%.2f",
             ),
             "EMA20斜率%": st.column_config.NumberColumn(
                 "EMA20斜率%",
@@ -162,6 +190,31 @@ def render_bucket(tab, bucket_name: str, blurb: str):
     with tab:
         st.markdown(blurb)
         _render_table(items, max_results)
+
+
+# VCP Setup tab — show Ready + Forming + Broken out across all buckets
+with tab_vcp:
+    st.markdown(
+        "**🎯 VCP setup detected**：呢度顯示有清晰VCP pattern嘅股票。"
+        "Pattern越成熟（🟢 Ready），距pivot越近 → 突破時嘅conviction越高。"
+    )
+    vcp_stocks = [s for s in filtered if s.vcp and s.vcp.maturity != "⚪ Not yet"]
+    # Sort: Ready first, then Forming, then Broken out; within each by RS desc
+    def _vcp_sort(s):
+        order = {"🟢 Ready": 0, "🟡 Forming": 1, "🚀 Broken out": 2}.get(s.vcp.maturity, 9)
+        rs = s.minervini.rs_rating if s.minervini and s.minervini.rs_rating is not None else 0
+        return (order, -rs)
+    vcp_stocks.sort(key=_vcp_sort)
+    _render_table(vcp_stocks, max_results)
+    if vcp_stocks:
+        n_r = sum(1 for s in vcp_stocks if "Ready" in s.vcp.maturity)
+        n_f = sum(1 for s in vcp_stocks if "Forming" in s.vcp.maturity)
+        n_b = sum(1 for s in vcp_stocks if "Broken" in s.vcp.maturity)
+        st.caption(
+            f"🟢 Ready: {n_r}（即刻可以set price alert喺pivot）· "
+            f"🟡 Forming: {n_f}（base未夠tight，繼續觀察）· "
+            f"🚀 突破: {n_b}（已經破pivot，可以追入或者等回踩）"
+        )
 
 
 # Minervini 8/8 tab — cross-bucket view of the gatekeeper winners

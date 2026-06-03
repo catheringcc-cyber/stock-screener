@@ -23,6 +23,7 @@ import pandas as pd
 
 from .indicators import enrich, relative_strength
 from .minervini import MinerviniResult, check_trend_template, compute_rs_ratings
+from .vcp import VCPResult, analyze_vcp
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Signal:
     # Minervini Trend Template (8 conditions). Set when scan_universe runs with
     # rs_ratings; remains None if we couldn't compute it.
     minervini: Optional[MinerviniResult] = None
+    vcp: Optional[VCPResult] = None
 
     def as_row(self) -> dict:
         row = {
@@ -51,6 +53,10 @@ class Signal:
             "Confidence": round(self.confidence, 1),
             "Minervini": self.minervini.badge if self.minervini else "—",
             "RS": round(self.minervini.rs_rating, 0) if self.minervini and self.minervini.rs_rating is not None else None,
+            "VCP": self.vcp.badge if self.vcp else "—",
+            "VCP tight%": round(self.vcp.tightness_pct, 2) if self.vcp and self.vcp.tightness_pct is not None else None,
+            "距Pivot%": round(self.vcp.distance_to_pivot_pct, 2) if self.vcp and self.vcp.distance_to_pivot_pct is not None else None,
+            "Pivot $": round(self.vcp.pivot_price, 2) if self.vcp and self.vcp.pivot_price is not None else None,
             "Price": round(self.price, 2),
             "Entry": round(self.entry, 2),
             "Stop": round(self.stop, 2),
@@ -420,12 +426,16 @@ def scan_universe(
         try:
             sig = evaluate(t, df, spy)
             if sig is not None:
-                # Attach Minervini Trend Template check
+                # Attach Minervini Trend Template check + VCP analysis
                 try:
                     enriched = enrich(df)
                     sig.minervini = check_trend_template(
                         enriched, rs_rating=rs_ratings.get(t)
                     )
+                except Exception:
+                    pass
+                try:
+                    sig.vcp = analyze_vcp(df, threshold_pct=5.0, lookback_bars=120)
                 except Exception:
                     pass
                 signals.append(sig)

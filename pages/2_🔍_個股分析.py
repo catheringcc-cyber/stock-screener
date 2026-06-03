@@ -15,6 +15,7 @@ from lib.minervini import CONDITION_LABELS, check_trend_template, compute_rs_rat
 from lib.options import analyze_ticker
 from lib.strategy import evaluate
 from lib.universe import get_universe
+from lib.vcp import analyze_vcp
 
 st.set_page_config(page_title="個股分析", page_icon="🔍", layout="wide")
 st.title("🔍 個股分析")
@@ -25,6 +26,20 @@ with col_inp:
     ticker = st.text_input("股票代號", value="ARM").strip().upper()
 with col_period:
     months_back = st.selectbox("睇返", [3, 6, 12, 18], index=2, format_func=lambda m: f"{m} 個月")
+
+with st.sidebar:
+    st.header("VCP 設定")
+    vcp_threshold = st.slider(
+        "Zigzag threshold (%)",
+        min_value=2.0, max_value=15.0, value=5.0, step=0.5,
+        help="呢個係VCP detection嘅敏感度。$1000股票 vs $20股票嘅normal volatility完全唔同。"
+             "預設5%適合大部分$50-500嘅股票。低波幅股票試 3%，高波幅spec試 7-8%。",
+    )
+    vcp_lookback = st.slider(
+        "VCP 分析窗口（交易日）",
+        min_value=60, max_value=180, value=120, step=10,
+        help="預設120日 ≈ 6個月。Recent setup用60-90日，older base用150+。",
+    )
 
 if not ticker:
     st.stop()
@@ -191,6 +206,83 @@ else:
     st.info("❌ **未過Trend Template**。冇過：\n- " + "\n- ".join(failed_list))
 
 
+# ---------- VCP 分析 ----------
+st.markdown("---")
+st.subheader("🎯 VCP (Volatility Contraction Pattern) 分析")
+st.caption(
+    "Minervini簽名setup — 一連串越嚟越細嘅回調 + 成交量遞減，最後收窄到一個pivot point。"
+    f"Threshold = **{vcp_threshold}%**（用左邊sidebar調），分析窗口 = **{vcp_lookback}**個交易日。"
+)
+
+vcp_result = analyze_vcp(df_raw, threshold_pct=vcp_threshold, lookback_bars=vcp_lookback)
+
+# Maturity headline
+mat = vcp_result.maturity
+if "Ready" in mat:
+    st.success(
+        f"🟢 **{mat}** · {vcp_result.n_contractions} contractions · "
+        f"tightness {vcp_result.tightness_pct:.2f}% · 距 pivot **{vcp_result.distance_to_pivot_pct:+.2f}%** · "
+        f"突破價 **${vcp_result.pivot_price:.2f}**"
+    )
+elif "Forming" in mat:
+    st.warning(
+        f"🟡 **{mat}** · {vcp_result.n_contractions} contractions · "
+        f"tightness {vcp_result.tightness_pct:.2f}% · 距 pivot **{vcp_result.distance_to_pivot_pct:+.2f}%** · "
+        f"pivot **${vcp_result.pivot_price:.2f}**"
+    )
+elif "Broken" in mat:
+    st.info(
+        f"🚀 **{mat}** · 已經升穿pivot **${vcp_result.pivot_price:.2f}**，"
+        f"距離 +{vcp_result.distance_to_pivot_pct:.2f}%。可以考慮追入或者等回踩pivot重新測試。"
+    )
+else:
+    st.markdown(f"⚪ **{mat}** — 暫時冇清晰嘅VCP setup。")
+
+# Metrics row
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Contractions", vcp_result.n_contractions,
+          f"全部zigzag: {len(vcp_result.all_contractions)}", delta_color="off")
+m2.metric("收窄度", f"{vcp_result.tightness_pct:.2f}%" if vcp_result.tightness_pct else "—",
+          "<3% = tight base" if vcp_result.tightness_pct and vcp_result.tightness_pct < 3 else "未夠tight",
+          delta_color="off")
+m3.metric("Pivot 價",
+          f"${vcp_result.pivot_price:.2f}" if vcp_result.pivot_price else "—",
+          help="VCP最後contraction嘅高位 = breakout level")
+m4.metric("距 Pivot",
+          f"{vcp_result.distance_to_pivot_pct:+.2f}%" if vcp_result.distance_to_pivot_pct is not None else "—",
+          help="負數=喺pivot之下；接近0% = 就嚟突破")
+
+# Contraction table
+if vcp_result.contractions:
+    st.markdown("**Contraction Series**（最近形成嘅VCP）")
+    df_c = pd.DataFrame([
+        {**c.as_row(), "T#": f"T{i+1}"}
+        for i, c in enumerate(vcp_result.contractions)
+    ])
+    # Reorder columns: T# first
+    cols_order = ["T#", "起點", "終點", "高點 $", "低點 $", "深度 %", "天數", "平均量"]
+    df_c = df_c[cols_order]
+    st.dataframe(df_c, use_container_width=True, hide_index=True,
+                 column_config={
+                     "高點 $": st.column_config.NumberColumn(format="$%.2f"),
+                     "低點 $": st.column_config.NumberColumn(format="$%.2f"),
+                     "深度 %": st.column_config.NumberColumn(format="%.2f%%"),
+                     "平均量": st.column_config.NumberColumn(format="%d"),
+                 })
+
+    # Volume + 40% rule status
+    rule_cols = st.columns(2)
+    rule_cols[0].markdown(
+        f"**40% 規則**：{'✅ 通過 — 每次≤上一次×0.6' if vcp_result.contraction_decreasing else '❌ 唔通過'}"
+    )
+    rule_cols[1].markdown(
+        f"**Volume 遞減**：{'✅ 通過' if vcp_result.volume_decreasing else '❌ 唔通過'}"
+        f" · 最後contraction vol {'< 50日均量 ✅' if vcp_result.final_vol_below_50d else '≥ 50日均量 ⚠️'}"
+    )
+else:
+    st.info("揾唔到VCP-eligible contractions。可能zigzag threshold太細/太大，試吓調整左邊sidebar。")
+
+
 # ---------- 交易水平 ----------
 st.subheader("交易水平")
 if sig is not None:
@@ -291,6 +383,43 @@ fig.add_hline(y=30, line_dash="dash", line_color="rgba(38,166,154,0.5)", row=3, 
 fig.add_hrect(y0=40, y1=60, fillcolor="rgba(126,87,194,0.15)", line_width=0,
               annotation_text="入場區", annotation_position="top left",
               annotation_font_size=10, row=3, col=1)
+
+# ---------- VCP overlay on price chart ----------
+if vcp_result.contractions:
+    # Zigzag line connecting the H→L→H→L... of the VCP series
+    zz_x, zz_y = [], []
+    for c in vcp_result.contractions:
+        zz_x.extend([c.high_date, c.low_date])
+        zz_y.extend([c.high_price, c.low_price])
+    fig.add_trace(
+        go.Scatter(
+            x=zz_x, y=zz_y, mode="lines+markers",
+            line=dict(color="#ffd54f", width=2, dash="dot"),
+            marker=dict(size=8, color="#ffd54f", symbol="diamond"),
+            name="VCP zigzag",
+        ),
+        row=1, col=1,
+    )
+    # Pivot price horizontal line (the breakout level)
+    if vcp_result.pivot_price:
+        fig.add_hline(
+            y=vcp_result.pivot_price,
+            line_color="#ffd54f", line_width=2, line_dash="solid",
+            annotation_text=f"VCP Pivot ${vcp_result.pivot_price:.2f}",
+            annotation_position="left",
+            annotation_font_size=11,
+            annotation_font_color="#ffd54f",
+            row=1, col=1,
+        )
+    # Annotate each T
+    for i, c in enumerate(vcp_result.contractions, 1):
+        fig.add_annotation(
+            x=c.low_date, y=c.low_price,
+            text=f"T{i}<br>-{c.depth_pct:.1f}%",
+            showarrow=True, arrowhead=2, arrowcolor="#ffd54f",
+            font=dict(size=10, color="#ffd54f"),
+            yshift=-10, row=1, col=1,
+        )
 
 fig.update_layout(
     height=750,
