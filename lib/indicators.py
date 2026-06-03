@@ -75,9 +75,12 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     out["EMA20"] = ema(out["Close"], 20)
     out["EMA50"] = ema(out["Close"], 50)
 
-    # SMA50 kept as a structural anchor (used for 50-day MA exit rule)
+    # SMA kept as structural anchors. SMA150 + SMA200 used by Minervini
+    # Trend Template; SMA50 used for the 50-day MA exit rule.
     out["SMA20"] = sma(out["Close"], 20)
     out["SMA50"] = sma(out["Close"], 50)
+    out["SMA150"] = sma(out["Close"], 150)
+    out["SMA200"] = sma(out["Close"], 200)
 
     # EMA20 slope — THE key swing-trade indicator (45° feel ≈ 3-7% / 10d)
     out["EMA20_slope10"] = slope_pct(out["EMA20"], 10)

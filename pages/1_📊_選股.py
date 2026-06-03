@@ -36,6 +36,11 @@ with st.sidebar:
 
     min_conf = st.slider("最低信心度", 0, 100, 50, 5)
     max_results = st.slider("每個bucket最多顯示", 5, 40, 20, 5)
+    minervini_only = st.checkbox(
+        "🏆 只睇Minervini 8/8 通過嘅股",
+        value=False,
+        help="開咗會喺所有bucket只顯示通過晒8條Trend Template嘅股票",
+    )
 
     rescan = st.button("🔄 強制重掃", help="清cache、重新由Yahoo拎數據")
 
@@ -66,13 +71,20 @@ custom_tuple = tuple(
 with st.spinner("掃描中…（首次掃整個股池要1-2分鐘，之後讀cache好快）"):
     signals, n_loaded = run_scan(universe_choice, custom_tuple)
 
-st.caption(f"已載入 {n_loaded} 隻 · 揾到 {len(signals)} 個signals")
+n_minervini = sum(1 for s in signals if s.minervini and s.minervini.all_pass)
+st.caption(
+    f"已載入 {n_loaded} 隻 · 揾到 {len(signals)} 個signals · "
+    f"🏆 **{n_minervini}** 隻通過Minervini Trend Template 8/8"
+)
 
 # ---------- 篩選同顯示 ----------
 filtered = [s for s in signals if s.confidence >= min_conf]
+if minervini_only:
+    filtered = [s for s in filtered if s.minervini and s.minervini.all_pass]
 
-tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
+tab_minervini, tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
     [
+        f"🏆 Minervini 8/8 ({sum(1 for s in filtered if s.minervini and s.minervini.all_pass)})",
         f"🎯 入場訊號 ({sum(1 for s in filtered if s.bucket == 'entry')})",
         f"⏳ 回調中 ({sum(1 for s in filtered if s.bucket == 'pullback')})",
         f"💪 強勢觀察 ({sum(1 for s in filtered if s.bucket == 'strong')})",
@@ -81,60 +93,91 @@ tab_entry, tab_pullback, tab_strong, tab_emerging = st.tabs(
 )
 
 
+def _render_table(items_list, max_n):
+    rows = [s.as_row() for s in items_list][:max_n]
+    if not rows:
+        st.info("依家無股符合呢個信心度。")
+        return
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={
+        "Ticker": "股票",
+        "Bucket": "Bucket",
+        "Confidence": "信心度",
+        "Minervini": "Minervini",
+        "RS": "RS Rating",
+        "Price": "現價",
+        "Entry": "入場價",
+        "Stop": "止蝕",
+        "T1": "目標1",
+        "T2": "目標2",
+        "R:R (T1)": "回報/風險",
+        "Stop %": "止蝕%",
+        "EMA20 slope %": "EMA20斜率%",
+        "HV pct": "波幅百分位",
+        "Notes": "備註",
+    })
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "信心度": st.column_config.ProgressColumn(
+                "信心度", min_value=0, max_value=100, format="%.1f"
+            ),
+            "Minervini": st.column_config.TextColumn(
+                "Minervini",
+                help="Minervini Trend Template 8條件通過幾多。🏆 8/8 = 完美 · ⭐ 7/8 · ⚠️ 5-6/8 · ❌ ≤4/8",
+            ),
+            "RS Rating": st.column_config.NumberColumn(
+                "RS Rating",
+                help="IBD式 12個月relative strength percentile rank（1-99）。≥70為Minervini第8條，理想85+。",
+                format="%.0f",
+            ),
+            "EMA20斜率%": st.column_config.NumberColumn(
+                "EMA20斜率%",
+                help="EMA20過去10日%變化。3-7%係45°甜蜜區，>15%太parabolic。",
+                format="%.2f%%",
+            ),
+            "波幅百分位": st.column_config.NumberColumn(
+                "波幅百分位",
+                help="HV percentile，越低越平靜（option可能平），越高越貴。",
+                format="%.0f",
+            ),
+            "現價": st.column_config.NumberColumn(format="$%.2f"),
+            "入場價": st.column_config.NumberColumn(format="$%.2f"),
+            "止蝕": st.column_config.NumberColumn(format="$%.2f"),
+            "目標1": st.column_config.NumberColumn(format="$%.2f"),
+            "目標2": st.column_config.NumberColumn(format="$%.2f"),
+            "止蝕%": st.column_config.NumberColumn(format="%.2f%%"),
+            "回報/風險": st.column_config.NumberColumn(format="%.2fx"),
+        },
+    )
+    st.caption(
+        "目標1 = 入場 + 2×風險 · 目標2 = 量度升幅目標 · 止蝕喺[-7%, -3%]之間"
+    )
+
+
 def render_bucket(tab, bucket_name: str, blurb: str):
-    rows = [s.as_row() for s in filtered if s.bucket == bucket_name][:max_results]
+    items = [s for s in filtered if s.bucket == bucket_name]
     with tab:
         st.markdown(blurb)
-        if not rows:
-            st.info("依家無股符合呢個信心度。")
-            return
-        df = pd.DataFrame(rows)
-        df = df.rename(columns={
-            "Ticker": "股票",
-            "Bucket": "Bucket",
-            "Confidence": "信心度",
-            "Price": "現價",
-            "Entry": "入場價",
-            "Stop": "止蝕",
-            "T1": "目標1",
-            "T2": "目標2",
-            "R:R (T1)": "回報/風險",
-            "Stop %": "止蝕%",
-            "EMA20 slope %": "EMA20斜率%",
-            "HV pct": "波幅百分位",
-            "Notes": "備註",
-        })
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "信心度": st.column_config.ProgressColumn(
-                    "信心度", min_value=0, max_value=100, format="%.1f"
-                ),
-                "EMA20斜率%": st.column_config.NumberColumn(
-                    "EMA20斜率%",
-                    help="EMA20過去10日%變化。3-7%係45°甜蜜區，>15%太parabolic。",
-                    format="%.2f%%",
-                ),
-                "波幅百分位": st.column_config.NumberColumn(
-                    "波幅百分位",
-                    help="HV percentile，越低越平靜（option可能平），越高越貴。將來會升級做IV rank。",
-                    format="%.0f",
-                ),
-                "現價": st.column_config.NumberColumn(format="$%.2f"),
-                "入場價": st.column_config.NumberColumn(format="$%.2f"),
-                "止蝕": st.column_config.NumberColumn(format="$%.2f"),
-                "目標1": st.column_config.NumberColumn(format="$%.2f"),
-                "目標2": st.column_config.NumberColumn(format="$%.2f"),
-                "止蝕%": st.column_config.NumberColumn(format="%.2f%%"),
-                "回報/風險": st.column_config.NumberColumn(format="%.2fx"),
-            },
-        )
-        st.caption(
-            "目標1 = 入場 + 2×風險 · 目標2 = 量度升幅目標 · 止蝕喺[-7%, -3%]之間"
-        )
+        _render_table(items, max_results)
 
+
+# Minervini 8/8 tab — cross-bucket view of the gatekeeper winners
+with tab_minervini:
+    st.markdown(
+        "**🏆 Minervini Trend Template 全部 8 條件通過。** 呢個係swing trade嘅gate keeper — "
+        "Minervini本人講過「過7條都唔夠」。喺呢個list入面再揀bucket睇，係最高conviction嘅setup。"
+    )
+    perfect = [s for s in filtered if s.minervini and s.minervini.all_pass]
+    # Sort by RS Rating desc within the tab
+    perfect.sort(key=lambda s: -(s.minervini.rs_rating or 0))
+    _render_table(perfect, max_results)
+    if perfect:
+        st.caption(
+            f"已按RS Rating由高到低排。最高分stock RS = {perfect[0].minervini.rs_rating:.0f}。"
+        )
 
 render_bucket(
     tab_entry,

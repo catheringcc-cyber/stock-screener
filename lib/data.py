@@ -17,7 +17,10 @@ CACHE_DIR = Path(__file__).parent.parent / ".cache" / "prices"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 BATCH_SIZE = 80
-LOOKBACK_DAYS = 400  # Need >200d for 200d MA + 50d MA + comfortable buffer
+# 500 calendar days ≈ 350 trading days. Need: 252d for 52-week high/low
+# (Minervini conditions 6-7), 200d to compute SMA200, then 21d of SMA200
+# history for the slope check. 500d gives comfortable buffer.
+LOOKBACK_DAYS = 500
 
 
 def _cache_path(ticker: str, asof: dt.date) -> Path:

@@ -9,10 +9,12 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from lib.data import download_single
+from lib.data import download_prices, download_single
 from lib.indicators import enrich
+from lib.minervini import CONDITION_LABELS, check_trend_template, compute_rs_ratings
 from lib.options import analyze_ticker
 from lib.strategy import evaluate
+from lib.universe import get_universe
 
 st.set_page_config(page_title="個股分析", page_icon="🔍", layout="wide")
 st.title("🔍 個股分析")
@@ -101,6 +103,93 @@ else:
         f"各階段分數 → 早期轉強: {s.get('emerging','—')} · "
         f"強勢: {s['strong']} · 回調: {s['pullback']} · 入場: {s['entry']}"
     )
+
+# ---------- Minervini Trend Template ----------
+st.markdown("---")
+st.subheader("🏆 Minervini Trend Template 檢查")
+st.caption(
+    "Minervini嘅 8 個gatekeeper條件 — **缺一不可**。出自《Think & Trade Like a Champion》。"
+)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _compute_rs_for_ticker(ticker: str) -> float | None:
+    """Compute RS rating for this ticker relative to S&P 500 + NDX universe."""
+    universe = get_universe("sp500_ndx")
+    if ticker not in universe:
+        universe = list(universe) + [ticker]
+    data = download_prices(universe)
+    ratings = compute_rs_ratings(data)
+    return ratings.get(ticker)
+
+
+with st.spinner("計算 RS Rating（同股池內所有股票比較）…"):
+    rs_rating = _compute_rs_for_ticker(ticker)
+
+mv_result = check_trend_template(enrich(df_raw), rs_rating=rs_rating)
+
+# Headline
+mv_color = "✅" if mv_result.all_pass else ("⭐" if mv_result.passed >= 7 else "⚠️" if mv_result.passed >= 5 else "❌")
+st.markdown(
+    f"### {mv_color} **{mv_result.passed}/8 通過** · "
+    f"RS Rating = **{rs_rating:.0f}**" if rs_rating is not None else f"### {mv_color} **{mv_result.passed}/8 通過** · RS Rating: 不適用（歷史不足252日）"
+)
+
+# Conditions checklist (2 columns)
+col_l, col_r = st.columns(2)
+for i in range(1, 9):
+    passed = mv_result.conditions.get(i, False)
+    icon = "✅" if passed else "❌"
+    label = CONDITION_LABELS[i]
+
+    # Add explanatory subtext for each condition
+    subtext = ""
+    if i == 1 and mv_result.sma150 is not None:
+        subtext = f"現價 ${mv_result.price:.2f} {'>' if passed else '≤'} SMA150 ${mv_result.sma150:.2f}"
+    elif i == 2 and mv_result.sma200 is not None:
+        subtext = f"現價 ${mv_result.price:.2f} {'>' if passed else '≤'} SMA200 ${mv_result.sma200:.2f}"
+    elif i == 3 and mv_result.sma150 is not None and mv_result.sma200 is not None:
+        subtext = f"SMA150 ${mv_result.sma150:.2f} {'>' if passed else '≤'} SMA200 ${mv_result.sma200:.2f}"
+    elif i == 4 and mv_result.sma200 is not None and mv_result.sma200_21d_ago is not None:
+        change_pct = (mv_result.sma200 / mv_result.sma200_21d_ago - 1) * 100
+        subtext = f"SMA200 21日變化 {change_pct:+.2f}%"
+    elif i == 5 and mv_result.sma50 is not None:
+        subtext = f"SMA50 ${mv_result.sma50:.2f}"
+    elif i == 6 and mv_result.pct_from_52w_low is not None:
+        subtext = f"離52週低 +{mv_result.pct_from_52w_low:.1f}%（需要 ≥30%）"
+    elif i == 7 and mv_result.pct_below_52w_high is not None:
+        subtext = f"距52週高 -{mv_result.pct_below_52w_high:.1f}%（需要 ≤25%）"
+    elif i == 8:
+        subtext = f"RS Rating = {rs_rating:.0f}" if rs_rating is not None else "RS Rating 無法計算"
+
+    target_col = col_l if i <= 4 else col_r
+    with target_col:
+        st.markdown(f"**{icon} 條件 {i}**：{label}")
+        if subtext:
+            st.caption(subtext)
+
+# Summary 52w stats
+if mv_result.week52_high is not None and mv_result.week52_low is not None:
+    st.markdown("**52週統計**")
+    w_cols = st.columns(3)
+    w_cols[0].metric("52週低", f"${mv_result.week52_low:.2f}",
+                     f"+{mv_result.pct_from_52w_low:.1f}% 離底" if mv_result.pct_from_52w_low else None)
+    w_cols[1].metric("52週高", f"${mv_result.week52_high:.2f}",
+                     f"-{mv_result.pct_below_52w_high:.1f}% 距頂" if mv_result.pct_below_52w_high else None,
+                     delta_color="inverse")
+    w_cols[2].metric("現價位置",
+                     f"{(mv_result.price - mv_result.week52_low) / (mv_result.week52_high - mv_result.week52_low) * 100:.0f}%",
+                     "0% = 52週低, 100% = 52週高")
+
+if mv_result.all_pass:
+    st.success("🏆 **完美通過 8/8**。Trend Template綠燈 — 可以進一步睇VCP形態 + Entry signal。")
+elif mv_result.passed == 7:
+    st.warning(f"⭐ **過咗 7/8**。Minervini本人話過：「過7條都唔夠」。唯一冇過嘅係條件 "
+               f"{[i for i, v in mv_result.conditions.items() if not v]}")
+else:
+    failed_list = [f"{i}." + CONDITION_LABELS[i] for i, v in mv_result.conditions.items() if not v]
+    st.info("❌ **未過Trend Template**。冇過：\n- " + "\n- ".join(failed_list))
+
 
 # ---------- 交易水平 ----------
 st.subheader("交易水平")

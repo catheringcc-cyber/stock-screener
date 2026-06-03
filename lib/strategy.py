@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .indicators import enrich, relative_strength
+from .minervini import MinerviniResult, check_trend_template, compute_rs_ratings
 
 
 @dataclass
@@ -39,12 +40,17 @@ class Signal:
     notes: str = ""
     ema20_slope: float = 0.0
     hv_pct: float = 0.0
+    # Minervini Trend Template (8 conditions). Set when scan_universe runs with
+    # rs_ratings; remains None if we couldn't compute it.
+    minervini: Optional[MinerviniResult] = None
 
     def as_row(self) -> dict:
-        return {
+        row = {
             "Ticker": self.ticker,
             "Bucket": self.bucket,
             "Confidence": round(self.confidence, 1),
+            "Minervini": self.minervini.badge if self.minervini else "—",
+            "RS": round(self.minervini.rs_rating, 0) if self.minervini and self.minervini.rs_rating is not None else None,
             "Price": round(self.price, 2),
             "Entry": round(self.entry, 2),
             "Stop": round(self.stop, 2),
@@ -56,6 +62,7 @@ class Signal:
             "HV pct": round(self.hv_pct, 0) if pd.notna(self.hv_pct) else None,
             "Notes": self.notes,
         }
+        return row
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +410,9 @@ def scan_universe(
     if spy is None or spy.empty:
         raise RuntimeError(f"Benchmark {benchmark_ticker} not found in price data")
 
+    # Compute RS Ratings for the whole universe FIRST (need cross-sectional rank)
+    rs_ratings = compute_rs_ratings(price_data)
+
     signals: list[Signal] = []
     for t, df in price_data.items():
         if t == benchmark_ticker:
@@ -410,6 +420,14 @@ def scan_universe(
         try:
             sig = evaluate(t, df, spy)
             if sig is not None:
+                # Attach Minervini Trend Template check
+                try:
+                    enriched = enrich(df)
+                    sig.minervini = check_trend_template(
+                        enriched, rs_rating=rs_ratings.get(t)
+                    )
+                except Exception:
+                    pass
                 signals.append(sig)
         except Exception as e:
             print(f"Evaluate failed for {t}: {e}")
