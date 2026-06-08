@@ -1,0 +1,19 @@
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping app
+        run: |
+          URL="https://catheringcc-cyber-stock-screener-app-b0xk6n.streamlit.app/"
+          STATUS=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 60 "$URL")
+          echo "Status: $STATUS"
+          [ "$STATUS" = "200" ] && echo "✅ Awake" || (echo "⚠️ $STATUS"; exit 1)
+          
