@@ -19,13 +19,14 @@ with st.sidebar:
     st.header("掃描設定")
     universe_choice = st.selectbox(
         "股池",
-        ["sp500_ndx", "sp500", "fallback"],
+        ["fallback", "sp500", "sp500_ndx"],
         format_func={
-            "sp500_ndx": "S&P 500 + Nasdaq 100（~517隻）",
-            "sp500": "S&P 500（500隻）",
-            "fallback": "精選動量股（~99隻）",
+            "fallback": "精選動量股（~99隻，快）",
+            "sp500": "S&P 500（500隻，慢）",
+            "sp500_ndx": "S&P 500 + Nasdaq 100（~517隻，最慢）",
         }.get,
         index=0,
+        help="細名單載入快、慳記憶體。S&P 500+NDX 覆蓋多但首次掃要1-2分鐘 + Cloud免費tier得1GB RAM可能OOM。",
     )
 
     custom_list = st.text_area(

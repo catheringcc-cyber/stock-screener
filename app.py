@@ -87,9 +87,17 @@ Zigzag threshold用 ATR-based 自動調整（1× ATR(20) / 股價），$1700 股
 
 st.info(
     "📡 **數據源**：Yahoo Finance（免費，無 API key）· "
-    "**股池**：S&P 500 ∪ Nasdaq 100（~517 隻）· "
+    "**股池**：可揀 99 / 500 / 517 隻 · "
     "**更新方式**：每日第一次開Screener自動拎當日收市最新數據 · "
     "**成本**：$0"
+)
+
+st.warning(
+    "⏱️ **首次掃描提示**：呢個 Streamlit Cloud 免費 deploy 嘅 app 有兩個延遲：\n"
+    "1. 如果幾個鐘冇人開 → app 會sleep，wake up需要30-60秒\n"
+    "2. 首次scan要1-2分鐘（要由Yahoo拎晒當日數據）\n\n"
+    "**建議**：第一次開先揀 **「精選動量股（~99隻）」**（sidebar 揀），秒返結果。"
+    "想睇全市場再揀 **S&P 500+NDX**。每日後續訪問會用cache，秒速load。"
 )
 
 st.markdown("---")
